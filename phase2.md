@@ -1,177 +1,236 @@
-# MarketHub — Phase 2 Technical Specification (Monetization, Growth & Fulfilment)
+# MarketHub — Phase 2 Technical Specification (Growth Platform)
 
 ## 1. Executive Summary
 
-Phase 2 layers monetization (subscriptions, commissions, payouts), growth (reviews, coupons, notifications), and fulfilment/ops (delivery, reports, analytics) onto the Phase 1 core. It assumes the Phase 1 foundations: shared-DB `tenant_id` scoping, master order + seller child orders, payment gateway abstraction, and settlement records (`seller_settlements`) already exist.
+Phase 2 turns the Phase 1 core marketplace into a revenue and trust platform: automated seller payouts, a configurable commissions engine, coupons, verified reviews, wishlist, in-app notifications, SaaS subscription plans, partial refunds, and seller staff RBAC. Delivery remains seller-fulfilled; platform-managed logistics stays optional.
 
-## 2. Scope, Assumptions & Key Decisions
+**Depends on:** Phase 1 tenancy, master/child orders, payment gateway interface, Sanctum API, Angular role dashboards.
+
+**Still out of scope (Phase 3+):** custom domains / branded storefronts, native mobile apps, multi-currency + FX, analytics warehouse, advertising exchange, warehouse multi-location inventory.
+
+---
+
+## 2. Scope & Assumptions
+
+| # | In scope | Notes |
+|---|---|---|
+| S1 | Reviews & ratings (product + store), moderation, report/flag | Verified-purchase only |
+| S2 | Wishlist / favorites | Customer-scoped; public counts optional |
+| S3 | Coupon engine | Platform + tenant coupons; cart/checkout apply |
+| S4 | Commissions engine | Per-category / per-tenant rates, min/max, overrides |
+| S5 | Seller payouts automation | Batch release of pending settlements |
+| S6 | SaaS subscription plans | Limits: stores, SKUs, staff seats, storage |
+| S7 | Partial refunds | Line-level, settlement adjustment, gateway refund |
+| S8 | Notifications | In-app inbox + email (queue); order/review/payout events |
+| S9 | Seller staff RBAC | store_manager, sales, inventory, accountant |
+| S10 | Featured listings (manual) | Admin/tenant flags already in Phase 1; add paid window |
 
 | # | Assumption | Trade-off if wrong |
 |---|---|---|
-| B1 | Subscriptions = tenants subscribing to **SaaS plans** (platform revenue), not customer memberships | If customer memberships needed: add `subscription` morph on users + per-store entitlement checks |
-| B2 | Commission model: percentage + optional flat fee per order item, configurable **per store/tenant, with platform default** | Category-level commissions = Phase 3; refund reversals handled pro-rata on refunded lines |
-| B3 | Payouts: platform-initiated batch payouts to sellers via a **PayoutGateway abstraction** (manual bank transfer is the MVP driver); payout schedule weekly/monthly with minimum threshold | Instant/on-demand payouts require per-gateway KYC integrations (Stripe Connect, etc.) |
-| B4 | Coupons: platform-wide and store-scoped coupons, flat/percent, usage limits, min order value | Stacking coupons excluded from MVP |
-| B5 | Delivery: sellers self-fulfil with **delivery providers abstracted** (own-driver tracking + external carrier API as drivers); delivery personnel module added | Platform-orchestrated 3PL dispatch changes the seller_order state machine |
-| B6 | Notifications: email (transactional) + in-app + optional push; event-driven via domain events | SMS = config-level add |
-| B7 | Reports/Analytics: operational reports from OLTP with read replicas/rollup tables; dedicated warehouse (Phase 3) | Heavy ad-hoc analytics will need OLAP later |
-| B8 | Reviews: purchase-verified only, moderation queue | No Q&A, no photo reviews in MVP |
-
-**Key decisions:**
-1. **Money flows stay separated:** customer totals vs seller settlements vs platform commission vs delivery fees — never merge into one column.
-2. **All Phase 2 state changes are event-driven** (`SellerOrderDelivered`, `PaymentCaptured`, …) so commissions, payouts, notifications, and analytics react without coupling.
-3. **Payouts are immutable ledger entries** — never mutate settled amounts; corrections are new adjustment entries.
+| B1 | Single currency still (USD/GHS instance-level) | Multi-currency = Phase 3 |
+| B2 | Payouts via same PaymentGateway `payout()` or manual export CSV if driver lacks it | Ghana PSP (Paystack/Hubtel) behind interface |
+| B3 | Coupons cannot stack unless `stackable=true`; platform coupon applies after tenant coupon | Complexity vs conversion |
+| B4 | Reviews only after `seller_order.status` in `delivered/completed` | Prevents fake verified reviews |
+| B5 | Subscriptions billed monthly; grace 3 days then storefront unpublished | Hard cut vs grace |
+| B6 | Partial refunds require remaining qty/amount >= 0; commission clawback proportional | Rounding to 2 dp |
 
 ---
 
-## 3. Data Model Additions
+## 3. Data Model (additive)
 
 ```mermaid
 erDiagram
-  PLAN ||--o{ SUBSCRIPTION : has
-  TENANT ||--o{ SUBSCRIPTION : holds
-  TENANT ||--o{ COMMISSION_RULE : configures
-  SELLER_ORDER ||--o{ SELLER_SETTLEMENT : computes
-  SELLER_SETTLEMENT ||--o{ PAYOUT_ITEM : groups
-  PAYOUT ||--o{ PAYOUT_ITEM : contains
-  PRODUCT ||--o{ REVIEW : receives
+  USER ||--o{ WISHLIST_ITEM : saves
+  PRODUCT ||--o{ WISHLIST_ITEM : listed_in
   USER ||--o{ REVIEW : writes
-  COUPON ||--o{ COUPON_REDEMPTION : redeemed_via
-  ORDER ||--o{ SHIPMENT : fulfills
-  SELLER_ORDER ||--o{ SHIPMENT : fulfills
-  NOTIFICATION ||}o--|| USER : targets
-  DAILY_SALES_ROLLUP }o--|| TENANT : aggregates
+  PRODUCT ||--o{ REVIEW : receives
+  STORE ||--o{ REVIEW : rated_as
+  ORDER_ITEM ||--o| REVIEW : verifies
+  COUPON ||--o{ COUPON_REDEMPTION : redeemed_by
+  ORDER ||--o{ COUPON_REDEMPTION : uses
+  SUBSCRIPTION_PLAN ||--o{ TENANT_SUBSCRIPTION : subscribed_as
+  TENANT ||--o| TENANT_SUBSCRIPTION : holds
+  SELLER_SETTLEMENT ||--o{ PAYOUT_ITEM : batched_in
+  PAYOUT_BATCH ||--o{ PAYOUT_ITEM : contains
+  ORDER ||--o{ REFUND : has
+  REFUND ||--o{ REFUND_LINE : splits
+  USER ||--o{ NOTIFICATION : receives
+  USER_ROLE ||--o{ ROLE_PERMISSION : grants
 ```
 
-| Table | Key fields | Notes / constraints |
+### Tables
+
+| Table | Key fields | Constraints |
 |---|---|---|
-| `plans` | id, name, price, billing_cycle (monthly/annual), limits JSON (max stores, max SKUs, commission override, features), status | platform-managed |
-| `subscriptions` | id, tenant_id, plan_id, status (trialing/active/past_due/cancelled), current_period_start/end, gateway_customer_id, cancel_at_period_end | `UNIQUE(tenant_id, status='active')` enforced via partial unique + app guard |
-| `subscription_invoices` | id, subscription_id, amount, status, paid_at, payment_transaction_id | reuses Phase 1 gateway abstraction |
-| `commission_rules` | id, tenant_id NULL (platform default), store_id NULL, category_id NULL, pct, flat_fee, priority, active_at | resolution: store > tenant > platform default; effective-dated |
-| `payouts` | id, tenant_id, period_start/end, gross, commission, refunds, adjustments, net, status (draft/approved/processing/paid/failed), gateway_ref, initiated_by, approved_by | two-person rule: initiator ≠ approver |
-| `payout_items` | id, payout_id, seller_settlement_id, amount | `UNIQUE(seller_settlement_id)` — never paid twice |
-| `payout_adjustments` | id, tenant_id, reason, amount ±, payout_id NULL | ledger-style corrections |
-| `reviews` | id, product_id, user_id, order_item_id (verified purchase), rating 1–5, body, status (pending/published/rejected), moderated_by | `UNIQUE(order_item_id, user_id)`; one review per purchased item |
-| `coupons` | id, owner (platform/store→tenant_id), code, type (percent/fixed), value, min_order_total, max_redemptions, per_user_limit, starts_at/ends_at, status | `UNIQUE(scope_tenant_id, code)`; code hashed or case-normalized |
-| `coupon_redemptions` | id, coupon_id, order_id, user_id, discount_amount | `UNIQUE(coupon_id, order_id)` |
-| `order_discounts` | order_id/seller_order_id, coupon_id NULL, amount, allocation_basis | **proportional allocation** of platform coupons across seller orders |
-| `shipments` | id, seller_order_id, provider (own/carrier slug), tracking_number, status (label_created/picked_up/in_transit/delivered/failed), shipped_at, delivered_at, carrier_payload JSON | status machine mirrored from provider webhooks |
-| `notification_preferences` | user_id, channel, event_type, enabled | per user/event/channel |
-| `notifications` | id, user_id, event_type, title, body, data JSON, read_at, channels_sent | `UNIQUE(user_id, dedupe_key)` |
-| `daily_sales_rollups` | tenant_id, store_id, date, orders_count, gross, commission, refunds, net | built by nightly job; indexes on (tenant_id, date) |
-| `reports_jobs` | id, requested_by, tenant_id NULL (platform = all), type, params JSON, status, output_file_path | async CSV/PDF export, tenant-scoped |
+| `wishlist_items` | user_id, product_id | `UNIQUE(user_id, product_id)` |
+| `reviews` | user_id, product_id, store_id, order_item_id NULL, rating 1-5, body, status (pending/published/rejected/flagged), verified bool | one review per user per product per order_item |
+| `review_reports` | review_id, reporter_user_id, reason | |
+| `coupons` | tenant_id NULL (platform), code, type (percent/fixed), value, min_subtotal, max_discount, starts_at, ends_at, usage_limit, per_user_limit, stackable, applies_to (order/store/category) | `UNIQUE(tenant_id, code)` |
+| `coupon_redemptions` | coupon_id, user_id, order_id, amount | |
+| `commission_rules` | tenant_id NULL, category_id NULL, rate, min_fee, max_fee, priority | highest priority wins |
+| `subscription_plans` | name, slug, price_monthly, max_stores, max_skus, max_staff, featured_slots, status | admin-configurable |
+| `tenant_subscriptions` | tenant_id, plan_id, status (trialing/active/past_due/cancelled), current_period_end, grace_until | one active per tenant |
+| `refunds` | order_id, requested_by, approved_by, status (requested/approved/rejected/processed), amount, gateway_ref | |
+| `refund_lines` | refund_id, order_item_id, qty, amount | qty <= remaining |
+| `payout_batches` | status (draft/processing/paid/failed), scheduled_for, gateway, gateway_ref, total | |
+| `payout_items` | batch_id, settlement_id, amount | settlement.status pending -> released |
+| `notifications` | user_id, type, title, body, data JSON, read_at | index (user_id, created_at) |
+| `permissions` / `role_permissions` | role, permission key | seed defaults per staff role |
 
-Indexes: `reviews(product_id, status, created_at)`, `coupons(code, status, starts_at, ends_at)`, `payouts(tenant_id, status)`, `shipments(seller_order_id)`, `daily_sales_rollups(tenant_id, store_id, date)`.
+Indexes: `reviews(product_id, status)`, `coupons(code, status)`, `notifications(user_id, read_at)`, `tenant_subscriptions(status, current_period_end)`.
 
 ---
 
-## 4. State Machines & Flows
+## 4. REST API Surface (Phase 2)
 
-**Subscription lifecycle:** `trialing → active → past_due (dunning, 3 retries) → cancelled | expired`. Renewal via gateway charge on period end (scheduled job); failed charge ⇒ past_due ⇒ tenant read-only after grace (enforce via middleware checking subscription status).
-
-**Commission computation (on `SellerOrderDelivered`):**
-```
-commission = Σ(order_items: gross_item × pct) + flat_fee(seller_order)
-seller_settlement.net = gross − commission − allocated_delivery − allocated_discounts − refunds
-```
-Refunds reverse commission pro-rata and create negative adjustment entries — never edit historical settlements.
-
-**Payout flow:**
-
-```mermaid
-flowchart LR
-  A["Settlements eligible (order completed + refund window passed)"] --> B["Payout batch draft (scheduled job)"]
-  B --> C["Admin approves"]
-  C --> D["PayoutGateway disburse"]
-  D --> E{"Webhook / result"}
-  E -- success --> F["payout = paid; items locked"]
-  E -- failure --> G["payout = failed; retry or manual"]
-```
-
-**Delivery flow:** `SellerOrderPaid → awaiting_fulfillment → label_created → picked_up → in_transit → delivered` (carrier webhooks update `shipments`; delivered triggers commission + review window). Own-driver mode: seller marks shipped/delivered with proof-of-delivery upload (tenant-prefixed storage path).
-
----
-
-## 5. API Additions
+Auth and error envelope unchanged from Phase 1 (RFC 7807-style, Sanctum).
 
 | Area | Endpoint | Method | Authz |
 |---|---|---|---|
-| Plans/Subs | `/api/admin/plans` CRUD; `/api/tenant/subscription` GET/POST/POST cancel | CRUD/GET/POST | super_admin / tenant_owner |
-| Commissions | `/api/admin/commission-rules`, `/api/tenant/commission-rules` | CRUD | super_admin / tenant_owner (own) |
-| Settlements | `/api/tenant/settlements` (list/detail, filter by period/status) | GET | tenant_owner |
-| Payouts | `/api/admin/payouts` (list/draft/approve), `/api/admin/payouts/{id}/retry` | GET/POST | super_admin, two-person approval |
-| Reviews | `/api/market/products/{id}/reviews` GET/POST (verified purchase), `/api/reviews/{id}` DELETE (author), `/api/admin/reviews` moderation | GET/POST/DELETE | public read / customer / super_admin |
-| Coupons | `/api/tenant/coupons` CRUD, `/api/admin/coupons`; validation at checkout: `POST /api/cart/coupon` | CRUD/POST | tenant_owner / customer |
-| Notifications | `/api/notifications` (list, mark-read), `/api/notifications/preferences` | GET/PATCH | any authed user |
-| Delivery | `/api/tenant/orders/{id}/shipments` POST (label/tracking), `/api/webhooks/carrier/{provider}` | POST | tenant / public+signature |
-| Reports | `/api/tenant/reports/{type}` GET (sync small) / POST export job; `/api/admin/reports` | GET/POST | role-scoped |
-| Analytics | `/api/tenant/analytics/summary?from&to`, `/api/admin/analytics/overview` | GET | tenant / super_admin |
+| Wishlist | `/api/wishlist` GET; `/api/wishlist/{productId}` POST/DELETE | GET/POST/DELETE | customer |
+| Reviews | `/api/market/products/{slug}/reviews` GET; `/api/reviews` POST; `/api/reviews/{id}/report` POST | GET public; POST customer verified | |
+| Review mod | `/api/admin/reviews` list/patch status; `/api/tenant/reviews` list own | GET/PATCH | admin / tenant |
+| Coupons | `/api/tenant/coupons` CRUD; `/api/admin/coupons` platform CRUD | CRUD | tenant / admin |
+| Coupon apply | `/api/checkout/quote` accepts `coupon_code`; `/api/cart/coupon` POST/DELETE | POST | customer |
+| Subscriptions | `/api/admin/plans` CRUD; `/api/tenant/subscription` GET; `/api/tenant/subscription/change` POST | | admin / tenant_owner |
+| Refunds | `/api/orders/{id}/refunds` POST (customer/seller); `/api/admin/refunds/{id}` PATCH approve | POST/PATCH | owner / admin |
+| Payouts | `/api/tenant/payouts` list; `/api/admin/payouts/run` POST; `/api/admin/payouts` GET | | tenant read / admin run |
+| Notifications | `/api/notifications` GET; `/api/notifications/{id}/read` POST; `/api/notifications/read-all` POST | | token |
+| Staff | `/api/tenant/staff` CRUD invite; `/api/tenant/staff/{id}/permissions` PATCH | | tenant_owner |
+| Commissions | `/api/admin/commission-rules` CRUD | | super_admin |
 
-Idempotency: coupon application and shipment creation accept `Idempotency-Key`. Export jobs return `202 { job_id }` + download URL when ready (signed, 24h expiry).
+**Checkout quote with coupon:**
 
-**Coupon validation rules:** active window, per-user limit, min order total, max redemptions, tenant/store scope match; discount allocated across seller orders by line-share so settlements stay consistent.
+```http
+POST /api/checkout/quote
+{ "shipping_address_id": 42, "coupon_code": "WELCOME10" }
+```
 
----
-
-## 6. Notifications
-
-Event → channels matrix (MVP):
-
-| Event | In-app | Email | Push (Phase 3) |
-|---|---|---|---|
-| Order placed / paid | ✅ seller+customer | ✅ | — |
-| Order shipped / delivered | ✅ customer | ✅ | — |
-| Refund processed | ✅ | ✅ | — |
-| Subscription past_due / renewed | ✅ tenant owner | ✅ | — |
-| Payout approved / paid | ✅ tenant owner | ✅ | — |
-| Review needs moderation | — | ✅ admin | — |
-| Low stock alert | ✅ seller | optional | — |
-
-Implementation: domain events → `ShouldQueue` listeners → `NotificationDispatcher` honoring `notification_preferences`; all queued, retry-safe, deduped via `dedupe_key`.
+Response totals add `discount_total` and `coupon: { code, amount }`. `grand_total` is after discount. Commission is computed on post-discount seller subtotal.
 
 ---
 
-## 7. Reports & Analytics
+## 5. Domain Rules
 
-**Operational reports (from rollups/OLTP):** sales by store/period, commission summary, settlements & payouts ledger, refund rate, low-stock, coupon performance, delivery SLA (order→delivered time), review moderation queue stats.
+### 5.1 Reviews
 
-**Tenant analytics dashboard:** GMV, net after commission, top products, order funnel (cart→checkout→paid), repeat-customer rate. **Admin analytics:** MRR/ARR from subscriptions, churn, GMV by store, commission yield, payout aging.
+- Create allowed only if `order_item` belongs to the user and parent seller_order is `delivered` or `completed`.
+- Default status `pending` if body contains links or rating is 1; else `published` (configurable).
+- Product rating = avg published reviews; store rating = avg of its product reviews.
+- Flagging 3 times auto-hides (`flagged`) until admin acts.
 
-Pattern: nightly rollup job writes `daily_sales_rollups`; dashboard queries hit rollups (fast, cheap); anything older than 90 days flagged for warehouse migration (Phase 3). Exports are queued jobs writing tenant-prefixed files with signed URLs; **never** cross-tenant unless super_admin (audited).
+### 5.2 Coupons
+
+Resolution order: tenant coupon (items of that store only) then platform coupon (remaining eligible subtotal). Reject if min_subtotal not met, expired, or usage_limit hit. Record redemption inside the checkout DB transaction.
+
+### 5.3 Commissions
+
+```
+rate = first matching commission_rules by priority
+  (tenant+category) > (tenant) > (category) > (platform default)
+commission = clamp(subtotal * rate, min_fee, max_fee)
+net = subtotal + delivery_fee - commission - refund_amount
+```
+
+Changing a rule does not rewrite historical seller_orders.
+
+### 5.4 Partial refunds
+
+- Request specifies `lines: [{ order_item_id, qty, amount? }]`; amount defaults to `qty * unit_price`.
+- Restock optional flag; if true, increment inventory quantity.
+- On `processed`: PaymentGateway.refund(tx, amount); bump `seller_settlements.refund_amount`; if settlement already `released`, create clawback payout_item (negative).
+- Master order status: `partially_refunded` if remaining > 0 else `refunded`.
+
+### 5.5 Payouts
+
+Nightly job (or admin "Run payouts"): select settlements `pending` where seller_order in `delivered/completed` and `placed_at` older than hold period (default 7 days). Group by tenant, create `payout_batch`, call gateway or mark `export_csv`. Idempotent on `settlement_id`.
+
+### 5.6 Subscriptions
+
+On tenant register, attach default `starter` plan (trial 14 days). Enforce limits in product/store/staff create policies. `past_due` after period_end: storefront products hidden from `/api/market/*` until paid or grace ends, then stores set `suspended`.
+
+### 5.7 Notifications (events)
+
+| Event | Recipients |
+|---|---|
+| order.paid | customer, each seller owner |
+| seller_order.status_changed | customer |
+| review.published | seller |
+| payout.paid | tenant_owner |
+| subscription.past_due | tenant_owner |
+| refund.processed | customer, seller |
+
+Write `notifications` row + queued mail. Never include PII beyond order id in logs.
+
+### 5.8 Staff RBAC
+
+| Permission | Owner | Manager | Sales | Inventory | Accountant |
+|---|---|---|---|---|---|
+| products CRUD | yes | yes | read | read | — |
+| inventory adjust | yes | yes | — | yes | — |
+| fulfil orders | yes | yes | yes | — | read |
+| coupons | yes | yes | — | — | read |
+| payouts read | yes | — | — | — | yes |
+| staff manage | yes | — | — | — | — |
 
 ---
 
-## 8. RBAC Additions
+## 6. Angular screens (Phase 2)
 
-| Capability | Super Admin | Tenant Owner | Store Staff | Customer |
-|---|---|---|---|---|
-| Manage plans, approve payouts, global commission rules | ✅ | — | — | — |
-| Approve payouts (second person) | ✅ (≠ initiator) | — | — | — |
-| View own settlements, own commission rules, tenant reports | — | ✅ | read | — |
-| Create shipments, update own coupon set | — | ✅ | ✅ | — |
-| Write review (verified purchase), manage own notification prefs | — | — | — | ✅ |
-| Moderate reviews, platform coupons, platform-wide reports | ✅ | — | — | — |
+| Screen | Additions |
+|---|---|
+| Product detail | Stars, review list, write-review (if eligible), wishlist heart |
+| Store page | Store rating, review summary |
+| Cart / checkout | Coupon field, discount line, subscription-gated seller warning |
+| Customer | Wishlist, notification bell, refund request on order detail |
+| Seller | Coupons CRUD, reviews inbox, payout history, staff invites, plan usage meters |
+| Super Admin | Plans, commission rules, payout run, review moderation queue, coupon platform |
 
----
-
-## 9. Security & Correctness Risks (explicit)
-
-- **Payout double-payment:** enforce `UNIQUE(payout_items.seller_settlement_id)` + DB transaction + settlement status lock; reconciliation job vs payout gateway ledger.
-- **Coupon abuse:** server-side validation only, per-user caps, rate-limit `/cart/coupon`, idempotent application, audit trail of redemptions.
-- **Subscription enforcement bypass:** middleware/tenant gate checks subscription status on *every* seller API request, not just at login.
-- **Review authenticity:** verified via `order_item_id` ownership check; moderation before publish; rate-limit review creation.
-- **Refund/commission race:** state transitions only via guarded transitions (e.g., `laravel-state-machine` style guards); commission reversal as new ledger entries, no mutation.
-- **Carrier webhook spoofing:** signature verification + `webhook_events` idempotency (reuse Phase 1 pattern).
-- **Analytics data leakage:** rollup queries scoped by tenant_id at query level, tested with negative authorization tests.
-- Payout KYC/tax data (bank details) stored encrypted; masked in all API responses (e.g., `••••4821`).
+Keep standalone components + signals, role guards, RFC7807 interceptor. WCAG 2.1 AA unchanged.
 
 ---
 
-## 10. Delivery Order (build sequence)
+## 7. Jobs & ops
 
-1. Commissions engine + settlement refinement (foundation for payouts) → 2. Subscriptions + enforcement middleware → 3. Payouts (manual transfer driver first) → 4. Coupons (checkout integration) → 5. Reviews → 6. Notifications infrastructure → 7. Shipments/delivery → 8. Rollups, reports, analytics dashboards → 9. Re-run Phase 1 hardening checklist against new endpoints.
+- `payouts:run` daily 02:00
+- `subscriptions:tick` hourly (expire / grace / unpublish)
+- `reviews:recompute-ratings` after publish/reject
+- `notifications:prune` 90 days
+- Hold period and commission default remain env/config: `PAYOUT_HOLD_DAYS`, `PLATFORM_COMMISSION_RATE`
 
 ---
 
-Next artifact I can produce: full migration SQL for the Phase 2 tables, OpenAPI spec for payouts/settlements, or the payout two-person-approval sequence diagram. Which one — and confirm B1 (subscriptions = SaaS plans for tenants, not customer memberships) if that assumption matters to you.
+## 8. Security additions
+
+- Coupon brute-force throttle (`throttle:10,1` on apply)
+- Review create throttle per user
+- Payout run is super_admin only + audit log
+- Staff invite tokens expire 48h; cannot grant super_admin
+- Refund amount cannot exceed captured payment minus prior refunds
+- Continue zero cross-tenant leakage tests for new endpoints
+
+---
+
+## 9. Delivery order
+
+1. Wishlist + notifications inbox
+2. Reviews (create, listing, moderation, ratings on product card)
+3. Coupon apply on quote/checkout
+4. Commission rules (replace flat config rate)
+5. Partial refunds + settlement clawback
+6. Payout batches
+7. Subscription plans + limit enforcement
+8. Seller staff roles
+9. Admin screens + hardening tests
+
+---
+
+## 10. Success criteria
+
+- A verified buyer can rate a product; average appears on marketplace cards.
+- A customer can apply a valid coupon and see a reduced `grand_total`.
+- Admin can change a tenant commission rate without rewriting old orders.
+- Admin can run payouts; seller sees released settlements.
+- Tenant on `starter` cannot exceed SKU cap.
+- Partial refund restocks and reduces net settlement.
+- Staff with `inventory` cannot open payouts.
