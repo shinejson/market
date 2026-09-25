@@ -6,12 +6,19 @@ use App\Http\Controllers\Controller;
 use App\Models\Category;
 use App\Models\Product;
 use App\Models\Store;
+use App\Services\Ads\AdAuctionService;
+use App\Services\Integration\EventBus;
 use App\Support\TenantContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class MarketController extends Controller
 {
+    public function __construct(
+        protected AdAuctionService $ads,
+        protected EventBus $events,
+    ) {}
+
     public function products(Request $request): JsonResponse
     {
         TenantContext::bypass(true);
@@ -49,9 +56,26 @@ class MarketController extends Controller
             };
 
             $page = $q->paginate($request->integer('per_page', 12));
+            $cards = collect($page->items())->map(fn (Product $p) => $this->productCard($p))->all();
+            $sponsored = $this->ads->auction(
+                slot: $request->filled('category_id') ? 'category' : 'search',
+                query: $request->string('q')->toString() ?: null,
+                categoryId: $request->filled('category_id') ? $request->integer('category_id') : null,
+                userId: $request->user()?->id,
+            );
+            if ($sponsored) {
+                $adCard = $this->productCard($sponsored['product']);
+                $adCard['sponsored'] = true;
+                $adCard['impression_id'] = $sponsored['impression_id'];
+                array_unshift($cards, $adCard);
+            }
 
             return response()->json([
-                'data' => collect($page->items())->map(fn (Product $p) => $this->productCard($p))->all(),
+                'data' => $cards,
+                'sponsored' => $sponsored ? [
+                    'impression_id' => $sponsored['impression_id'],
+                    'product_id' => $sponsored['product_id'],
+                ] : null,
                 'meta' => [
                     'page' => $page->currentPage(),
                     'per_page' => $page->perPage(),
@@ -73,6 +97,11 @@ class MarketController extends Controller
                 ->where('slug', $slug)
                 ->where('status', Product::STATUS_ACTIVE)
                 ->firstOrFail();
+
+            $this->events->emit($product->tenant_id, 'product.viewed', [
+                'product_id' => $product->id,
+                'store_id' => $product->store_id,
+            ]);
 
             return response()->json(['data' => $this->productCard($product, true)]);
         } finally {
@@ -145,6 +174,13 @@ class MarketController extends Controller
         }
     }
 
+    public function click(Request $request, int $impression): JsonResponse
+    {
+        $ok = $this->ads->recordClick($impression, $request->user()?->id);
+
+        return response()->json(['data' => ['ok' => $ok]]);
+    }
+
     protected function productCard(Product $p, bool $detailed = false): array
     {
         $payload = [
@@ -166,6 +202,7 @@ class MarketController extends Controller
                 'name' => $p->category->name,
                 'slug' => $p->category->slug,
             ] : null,
+            'sponsored' => false,
             'variants' => $p->variants->map(fn ($v) => [
                 'id' => $v->id,
                 'sku' => $v->sku,

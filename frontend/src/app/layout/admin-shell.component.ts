@@ -15,6 +15,9 @@ import { AuthService } from '../core/auth.service';
           <a routerLink="/admin/tenants" routerLinkActive="on">Tenants</a>
           <a routerLink="/admin/orders" routerLinkActive="on">Orders</a>
           <a routerLink="/admin/audit" routerLinkActive="on">Audit log</a>
+          <a routerLink="/admin/analytics" routerLinkActive="on">Analytics</a>
+          <a routerLink="/admin/domains" routerLinkActive="on">Domains</a>
+          <a routerLink="/admin/ads" routerLinkActive="on">Ads</a>
         </nav>
         <button class="btn ghost" (click)="auth.logout()">Log out</button>
       </aside>

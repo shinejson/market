@@ -26,7 +26,7 @@ import { ProductCardComponent } from '../../shared/product-card.component';
         <div class="empty card">No results. Reset filters and try again.</div>
       } @else {
         <div class="grid cards">
-          @for (p of products(); track p.id) { <app-product-card [product]="p" /> }
+          @for (p of products(); track p.impression_id || p.id) { <app-product-card [product]="p" /> }
         </div>
       }
     </div>

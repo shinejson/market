@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Order;
 use App\Models\SellerOrder;
+use App\Services\Integration\EventBus;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -12,6 +13,8 @@ use Illuminate\Validation\ValidationException;
 
 class SellerOrderController extends Controller
 {
+    public function __construct(protected EventBus $events) {}
+
     public function index(Request $request): JsonResponse
     {
         $this->authorize('viewAny', SellerOrder::class);
@@ -52,6 +55,20 @@ class SellerOrderController extends Controller
         }
         $order->update(['status' => $data['status']]);
         $this->syncMasterOrder($order);
+        $event = match ($data['status']) {
+            SellerOrder::STATUS_SHIPPED => 'order.shipped',
+            SellerOrder::STATUS_DELIVERED, SellerOrder::STATUS_COMPLETED => 'order.delivered',
+            SellerOrder::STATUS_CANCELLED => 'order.cancelled',
+            SellerOrder::STATUS_REFUNDED => 'order.refunded',
+            default => null,
+        };
+        if ($event) {
+            $this->events->emit((int) $order->tenant_id, $event, [
+                'seller_order_id' => $order->id,
+                'order_id' => $order->order_id,
+                'status' => $data['status'],
+            ]);
+        }
 
         return response()->json(['data' => $order->fresh()]);
     }

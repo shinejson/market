@@ -3,6 +3,9 @@
 namespace Database\Seeders;
 
 use App\Models\Address;
+use App\Models\AdBalance;
+use App\Models\AdCampaign;
+use App\Models\AdTarget;
 use App\Models\Category;
 use App\Models\Inventory;
 use App\Models\Product;
@@ -10,6 +13,8 @@ use App\Models\ProductImage;
 use App\Models\ProductVariant;
 use App\Models\Store;
 use App\Models\Tenant;
+use App\Models\TenantAiSetting;
+use App\Models\TenantDomain;
 use App\Models\User;
 use App\Models\UserRole;
 use Illuminate\Database\Seeder;
@@ -75,6 +80,51 @@ class DatabaseSeeder extends Seeder
                 ['name' => 'Ceramic Pour-Over Set', 'price' => 48.00, 'qty' => 22, 'cat' => 'Kitchen', 'brand' => 'Clayhouse'],
                 ['name' => 'Shea Body Butter 200ml', 'price' => 16.00, 'qty' => 80, 'cat' => 'Beauty', 'brand' => 'SheaGold'],
                 ['name' => 'Woven Market Tote', 'price' => 28.00, 'qty' => 4, 'cat' => 'Home', 'brand' => 'Kente'],
+            ],
+        );
+
+        $this->seedPhase3();
+    }
+
+    protected function seedPhase3(): void
+    {
+        $north = Tenant::query()->where('slug', 'northstar-gadgets')->first();
+        $store = Store::withoutGlobalScopes()->where('slug', 'northstar')->first();
+        $product = Product::withoutGlobalScopes()->where('slug', 'pulse-wireless-headphones')->first();
+        if (! $north || ! $store || ! $product) {
+            return;
+        }
+
+        AdBalance::query()->firstOrCreate(
+            ['tenant_id' => $north->id],
+            ['balance' => 50.00],
+        );
+        $campaign = AdCampaign::withoutGlobalScopes()->firstOrCreate(
+            ['tenant_id' => $north->id, 'name' => 'Pulse launch'],
+            [
+                'store_id' => $store->id,
+                'status' => AdCampaign::STATUS_ACTIVE,
+                'daily_budget' => 20,
+                'total_budget' => 200,
+                'bid_cpc' => 0.35,
+                'start_date' => now()->toDateString(),
+            ],
+        );
+        AdTarget::query()->firstOrCreate([
+            'campaign_id' => $campaign->id,
+            'product_id' => $product->id,
+        ], ['match_type' => 'exact']);
+        TenantAiSetting::query()->firstOrCreate(
+            ['tenant_id' => $north->id],
+            ['tone' => 'warm', 'length' => 'medium', 'language' => 'en', 'monthly_token_budget' => 50000],
+        );
+        TenantDomain::withoutGlobalScopes()->firstOrCreate(
+            ['domain' => 'shop.northstar.test'],
+            [
+                'tenant_id' => $north->id,
+                'status' => TenantDomain::STATUS_DNS_PENDING,
+                'verification_token' => 'demo-verify-token-northstar',
+                'cert_status' => 'none',
             ],
         );
     }

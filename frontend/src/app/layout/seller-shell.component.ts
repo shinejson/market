@@ -15,6 +15,12 @@ import { AuthService } from '../core/auth.service';
           <a routerLink="/seller/orders" routerLinkActive="on">Orders</a>
           <a routerLink="/seller/products" routerLinkActive="on">Products</a>
           <a routerLink="/seller/inventory" routerLinkActive="on">Inventory</a>
+          <a routerLink="/seller/ads" routerLinkActive="on">Ads</a>
+          <a routerLink="/seller/domains" routerLinkActive="on">Domains</a>
+          <a routerLink="/seller/api-keys" routerLinkActive="on">API keys</a>
+          <a routerLink="/seller/webhooks" routerLinkActive="on">Webhooks</a>
+          <a routerLink="/seller/ai" routerLinkActive="on">AI</a>
+          <a routerLink="/seller/analytics" routerLinkActive="on">Analytics</a>
         </nav>
         <button class="btn ghost" (click)="auth.logout()">Log out</button>
       </aside>

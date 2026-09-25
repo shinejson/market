@@ -12,6 +12,7 @@ use App\Models\ProductVariant;
 use App\Models\SellerOrder;
 use App\Models\SellerSettlement;
 use App\Models\User;
+use App\Services\Integration\EventBus;
 use App\Services\Payment\PaymentGateway;
 use App\Support\TenantContext;
 use Illuminate\Support\Facades\DB;
@@ -22,6 +23,7 @@ class CheckoutService
     public function __construct(
         protected CartService $carts,
         protected PaymentGateway $gateway,
+        protected EventBus $events,
     ) {}
 
     public function quote(User $user): array
@@ -169,6 +171,22 @@ class CheckoutService
             'expires_at' => now()->addHours((int) config('markethub.idempotency_ttl_hours')),
         ]);
 
+        $this->events->emit(null, 'order.placed', [
+            'order_id' => $payload['order']['id'],
+            'grand_total' => $payload['order']['grand_total'],
+        ], hash('sha256', 'u:'.$user->id));
+        foreach ($payload['seller_orders'] as $so) {
+            $tenantId = SellerOrder::withoutGlobalScopes()->find($so['id'])?->tenant_id;
+            if ($tenantId) {
+                $this->events->emit((int) $tenantId, 'order.placed', [
+                    'order_id' => $payload['order']['id'],
+                    'seller_order_id' => $so['id'],
+                    'store_id' => $so['store_id'],
+                    'subtotal' => $so['subtotal'],
+                ], hash('sha256', 'u:'.$user->id));
+            }
+        }
+
         return $payload;
     }
 
@@ -239,6 +257,19 @@ class CheckoutService
                 }
             }
         });
+
+        $order->load('sellerOrders');
+        $this->events->emit(null, 'order.paid', [
+            'order_id' => $order->id,
+            'grand_total' => (string) $order->grand_total,
+        ]);
+        foreach ($order->sellerOrders as $sellerOrder) {
+            $this->events->emit((int) $sellerOrder->tenant_id, 'order.paid', [
+                'order_id' => $order->id,
+                'seller_order_id' => $sellerOrder->id,
+                'store_id' => $sellerOrder->store_id,
+            ]);
+        }
     }
 
     public function releaseReservation(Order $order): void

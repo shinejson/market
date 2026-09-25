@@ -139,4 +139,112 @@ export class ApiService {
   registerTenant(payload: any) {
     return this.http.post<{ data: any }>('/api/tenants/register', payload);
   }
+
+  clickAd(impressionId: number) {
+    return this.http.post<{ data: { ok: boolean } }>(`/api/market/ads/click/${impressionId}`, {});
+  }
+
+  sellerDomains() {
+    return this.http.get<{ data: any[] }>('/api/tenant/domains');
+  }
+
+  addDomain(domain: string) {
+    return this.http.post<{ data: any }>('/api/tenant/domains', { domain });
+  }
+
+  verifyDomain(id: number, force = false) {
+    return this.http.post<{ data: any }>(`/api/tenant/domains/${id}/verify`, { force });
+  }
+
+  sellerAds() {
+    return this.http.get<{ data: { balance: string; campaigns: any[] } }>('/api/tenant/ads');
+  }
+
+  createAd(payload: any) {
+    return this.http.post<{ data: any }>('/api/tenant/ads', payload);
+  }
+
+  updateAd(id: number, payload: any) {
+    return this.http.patch<{ data: any }>(`/api/tenant/ads/${id}`, payload);
+  }
+
+  fundAds(amount: number) {
+    return this.http.post<{ data: any }>('/api/tenant/ads/fund', { amount });
+  }
+
+  sellerApiKeys() {
+    return this.http.get<{ data: any[] }>('/api/tenant/api-keys');
+  }
+
+  createApiKey(payload: any) {
+    return this.http.post<{ data: { key: any; secret: string } }>('/api/tenant/api-keys', payload);
+  }
+
+  revokeApiKey(id: number) {
+    return this.http.delete<{ data: any }>(`/api/tenant/api-keys/${id}`);
+  }
+
+  sellerWebhooks() {
+    return this.http.get<{ data: any[] }>('/api/tenant/webhooks');
+  }
+
+  createWebhook(payload: any) {
+    return this.http.post<{ data: any }>('/api/tenant/webhooks', payload);
+  }
+
+  webhookCatalog() {
+    return this.http.get<{ data: string[] }>('/api/tenant/webhooks/catalog');
+  }
+
+  aiDescribe(productId: number) {
+    return this.http.post<{ data: any }>('/api/tenant/ai/describe', { product_id: productId });
+  }
+
+  aiCategorize(productId: number) {
+    return this.http.post<{ data: any }>('/api/tenant/ai/categorize', { product_id: productId });
+  }
+
+  aiGenerations() {
+    return this.http.get<{ data: any[] }>('/api/tenant/ai/generations');
+  }
+
+  reviewGeneration(id: number, status: string) {
+    return this.http.post<{ data: any }>(`/api/tenant/ai/generations/${id}/review`, { status });
+  }
+
+  aiInsights() {
+    return this.http.get<{ data: any }>('/api/tenant/ai/insights');
+  }
+
+  sellerAnalytics() {
+    return this.http.get<{ data: any }>('/api/tenant/analytics');
+  }
+
+  adminAnalytics() {
+    return this.http.get<{ data: any }>('/api/admin/analytics');
+  }
+
+  adminInsights() {
+    return this.http.get<{ data: any }>('/api/admin/insights');
+  }
+
+  adminAds() {
+    return this.http.get<{ data: any[] }>('/api/admin/ads');
+  }
+
+  adminDomains() {
+    return this.http.get<{ data: any[] }>('/api/admin/domains');
+  }
+
+  adminVerifyDomain(id: number) {
+    return this.http.post<{ data: any }>(`/api/admin/domains/${id}/verify`, {});
+  }
+
+  adminWebhookHealth() {
+    return this.http.get<{ data: any }>('/api/admin/webhooks/health');
+  }
+
+  adminAiCosts() {
+    return this.http.get<{ data: any[] }>('/api/admin/ai-costs');
+  }
 }

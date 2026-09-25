@@ -1,19 +1,28 @@
 <?php
 
 use App\Http\Controllers\Api\AddressController;
+use App\Http\Controllers\Api\AdCampaignController;
 use App\Http\Controllers\Api\AdminController;
+use App\Http\Controllers\Api\AdminPhase3Controller;
+use App\Http\Controllers\Api\AiController;
+use App\Http\Controllers\Api\AnalyticsController;
+use App\Http\Controllers\Api\ApiKeyController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CartController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CheckoutController;
 use App\Http\Controllers\Api\DashboardController;
+use App\Http\Controllers\Api\DeviceTokenController;
+use App\Http\Controllers\Api\DomainController;
 use App\Http\Controllers\Api\InventoryController;
 use App\Http\Controllers\Api\MarketController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\SellerOrderController;
+use App\Http\Controllers\Api\SellerPublicApiController;
 use App\Http\Controllers\Api\TenantController;
+use App\Http\Controllers\Api\WebhookController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('throttle:10,1')->group(function () {
@@ -27,6 +36,7 @@ Route::prefix('market')->middleware('throttle:60,1')->group(function () {
     Route::get('/stores', [MarketController::class, 'stores']);
     Route::get('/stores/{slug}', [MarketController::class, 'store']);
     Route::get('/categories', [MarketController::class, 'categories']);
+    Route::post('/ads/click/{impression}', [MarketController::class, 'click']);
 });
 
 Route::post('/payments/webhook/{gateway}', [PaymentController::class, 'webhook']);
@@ -97,7 +107,43 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/orders/{order}/status', [SellerOrderController::class, 'updateStatus']);
 
         Route::get('/dashboard/summary', [DashboardController::class, 'summary']);
+
+        Route::get('/domains', [DomainController::class, 'index']);
+        Route::post('/domains', [DomainController::class, 'store']);
+        Route::post('/domains/{domain}/verify', [DomainController::class, 'verify']);
+        Route::delete('/domains/{domain}', [DomainController::class, 'destroy']);
+
+        Route::get('/ads', [AdCampaignController::class, 'index']);
+        Route::post('/ads', [AdCampaignController::class, 'store']);
+        Route::patch('/ads/{campaign}', [AdCampaignController::class, 'update']);
+        Route::post('/ads/fund', [AdCampaignController::class, 'fund']);
+
+        Route::get('/api-keys', [ApiKeyController::class, 'index']);
+        Route::post('/api-keys', [ApiKeyController::class, 'store']);
+        Route::delete('/api-keys/{apiKey}', [ApiKeyController::class, 'destroy']);
+
+        Route::get('/webhooks', [WebhookController::class, 'index']);
+        Route::post('/webhooks', [WebhookController::class, 'store']);
+        Route::delete('/webhooks/{endpoint}', [WebhookController::class, 'destroy']);
+        Route::get('/webhooks/catalog', [WebhookController::class, 'catalog']);
+        Route::get('/webhooks/{endpoint}/deliveries', [WebhookController::class, 'deliveries']);
+        Route::post('/webhooks/deliveries/{delivery}/replay', [WebhookController::class, 'replay']);
+
+        Route::get('/ai/settings', [AiController::class, 'settings']);
+        Route::patch('/ai/settings', [AiController::class, 'updateSettings']);
+        Route::post('/ai/describe', [AiController::class, 'describe']);
+        Route::post('/ai/categorize', [AiController::class, 'categorize']);
+        Route::get('/ai/generations', [AiController::class, 'generations']);
+        Route::post('/ai/generations/{generation}/review', [AiController::class, 'reviewGeneration']);
+        Route::post('/ai/categorizations/{categorization}/accept', [AiController::class, 'acceptCategory']);
+        Route::get('/ai/insights', [AiController::class, 'insights']);
+        Route::get('/ai/usage', [AiController::class, 'usage']);
+
+        Route::get('/analytics', [AnalyticsController::class, 'tenant']);
     });
+
+    Route::post('/devices', [DeviceTokenController::class, 'store']);
+    Route::delete('/devices', [DeviceTokenController::class, 'destroy']);
 
     Route::middleware('role:super_admin')->prefix('admin')->group(function () {
         Route::get('/tenants', [AdminController::class, 'tenants']);
@@ -105,5 +151,21 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/orders', [AdminController::class, 'orders']);
         Route::get('/metrics', [AdminController::class, 'metrics']);
         Route::get('/audit-logs', [AdminController::class, 'auditLogs']);
+        Route::get('/analytics', [AnalyticsController::class, 'platform']);
+        Route::get('/insights', [AnalyticsController::class, 'platformInsights']);
+        Route::get('/domains', [AdminPhase3Controller::class, 'domains']);
+        Route::post('/domains/{domain}/verify', [AdminPhase3Controller::class, 'forceVerifyDomain']);
+        Route::delete('/domains/{domain}', [AdminPhase3Controller::class, 'forceRemoveDomain']);
+        Route::get('/ads', [AdminPhase3Controller::class, 'ads']);
+        Route::get('/ai-costs', [AdminPhase3Controller::class, 'aiCosts']);
+        Route::get('/webhooks/health', [AdminPhase3Controller::class, 'webhookHealth']);
     });
+});
+
+Route::prefix('seller/v1')->middleware('throttle:60,1')->group(function () {
+    Route::get('/products', [SellerPublicApiController::class, 'products'])->middleware('seller.api:products.read');
+    Route::get('/orders', [SellerPublicApiController::class, 'orders'])->middleware('seller.api:orders.read');
+    Route::post('/orders/{order}/fulfill', [SellerPublicApiController::class, 'fulfill'])->middleware('seller.api:orders.fulfill');
+    Route::patch('/variants/{variant}/inventory', [SellerPublicApiController::class, 'inventory'])->middleware('seller.api:inventory.write');
+    Route::get('/settlements', [SellerPublicApiController::class, 'settlements'])->middleware('seller.api:settlements.read');
 });

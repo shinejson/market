@@ -17,6 +17,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'role' => \App\Http\Middleware\EnsureRole::class,
             'tenant' => \App\Http\Middleware\SetTenantContext::class,
+            'seller.api' => \App\Http\Middleware\AuthenticateSellerApiKey::class,
         ]);
         $middleware->throttleApi();
         $middleware->prependToPriorityList(

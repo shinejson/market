@@ -33,6 +33,8 @@ export interface ProductCard {
     status: string;
   }[];
   description?: string;
+  sponsored?: boolean;
+  impression_id?: number;
 }
 
 export interface Storefront {

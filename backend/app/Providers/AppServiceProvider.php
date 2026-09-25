@@ -2,6 +2,8 @@
 
 namespace App\Providers;
 
+use App\Services\Ai\AiProvider;
+use App\Services\Ai\MockAiProvider;
 use App\Services\Payment\MockPaymentGateway;
 use App\Services\Payment\PaymentGateway;
 use Illuminate\Cache\RateLimiting\Limit;
@@ -18,6 +20,7 @@ class AppServiceProvider extends ServiceProvider
                 default => new MockPaymentGateway,
             };
         });
+        $this->app->singleton(AiProvider::class, MockAiProvider::class);
     }
 
     public function boot(): void

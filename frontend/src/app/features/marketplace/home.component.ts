@@ -28,7 +28,7 @@ import { ProductCardComponent } from '../../shared/product-card.component';
         <div class="grid cards">@for (i of [1,2,3,4]; track i) { <div class="skeleton" style="height:280px"></div> }</div>
       } @else {
         <div class="grid cards">
-          @for (p of products(); track p.id) { <app-product-card [product]="p" /> }
+          @for (p of products(); track p.impression_id || p.id) { <app-product-card [product]="p" /> }
         </div>
       }
     </section>
